@@ -1,15 +1,21 @@
 #!/usr/bin/python3
 
 #step for generating input file from a pcap file
-#tshark -r packets_dump.pcap > /tmp/x1
-#grep PSH /tmp/x1 > /tmp/psh
-#cat /tmp/psh | sed "s/  / /g" | sed "s/  / /g"| sed "s/  / /g"| sed "s/  / /g"| sed "s/  / /g"| sed "s/  / /g"| sed "s/  / /g"| sed "s/  / /g"| sed "s/  / /g"| sed "s/  / /g" | sed "s/^ //g" > /tmp/psh_white
-#cat /tmp/psh_white | cut -f2,3,5,8,10 -d' ' > ./input
+#tshark -r packets_dump_0004_002.pcap | grep PSH | sed -E "s/ +/ /g" | sed "s/^ //g" | cut -f3,4,6,9,10 -d' ' > input
+
+import argparse
+
+parser = argparse.ArgumentParser(description='Analyze micro burst using tcpdump pcap file')
+parser.add_argument('port', type=int, default=6379
+                    help='server port')
+
+args = parser.parse_args()
 
 # TODO move this into command line argument
-server_ip = "100.82.92.46"
-server_port = "6379"
+server_port = str(args.port)
 input_file = "input"
+server_ip = None
+max_timestamp = 0
 
 client_request_sent_timestamp = {}
 server_side_latency_stats = []
@@ -28,7 +34,17 @@ with open(input_file) as f:
         line = line.strip()
 
         timestamp, src_ip, dest_ip, src_port, dest_port = line.split(" ")
+        if server_ip == None:
+            if src_port == server_port:
+                server_ip = src_ip
+            elif dest_port == server_port:
+                server_ip = dest_ip
+            else:
+                print("failed to find server port {}".format(server_port))
+                exit(1)
         timestamp = float(timestamp)
+        if timestamp > max_timestamp:
+            max_timestamp = timestamp
         if src_port == server_port:
             # response
             # track response sent time
@@ -71,9 +87,12 @@ with open(input_file) as f:
 # Calculate metric for in-flight request count per milliseconds
 from collections import OrderedDict
 
+DURATION_IN_MILLISECONDS = int(max_timestamp * 1000) + 1
+DURATION_IN_TEN_MILLISECONDS = int(DURATION_IN_MILLISECONDS / 10) + 1
+
 inflightRequests = OrderedDict()
-aggregatedDuration = [0.0] * 2000
-openRequestCountPerMilliseconds = [0] * 2500
+aggregatedDuration = [0.0] * DURATION_IN_MILLISECONDS
+openRequestCountPerMilliseconds = [0] * DURATION_IN_MILLISECONDS
 currentTimestampMilliseconds = 0
 lastTimestamp = None
 
@@ -100,8 +119,6 @@ for line in paired_lines:
         inflightRequestCount = len(inflightRequests)
         if inflightRequestCount > 0:
             aggregatedDuration[inflightRequestCount - 1] += timestamp - lastTimestamp
-            if inflightRequestCount == 1005:
-               print(timestamp)
         # track request received time
         inflightRequests[client] = timestamp
     lastTimestamp = timestamp
@@ -112,8 +129,8 @@ for i in range(len(aggregatedDuration)):
         print("{:4} : {:6.3f} ms".format(i + 1, aggregatedDuration[i] * 1000))
 
 # Calculate metric for received and completed request every 10ms seconds.
-receivedRequestCountPerTenMilliseconds = [0] * 250
-completedRequestCountPerTenMilliseconds = [0] * 250
+receivedRequestCountPerTenMilliseconds = [0] * DURATION_IN_TEN_MILLISECONDS
+completedRequestCountPerTenMilliseconds = [0] * DURATION_IN_TEN_MILLISECONDS
 receivedRequestCount = 0
 completedRequestCount = 0
 currentTimestampTenMilliseconds = 0
@@ -136,15 +153,16 @@ for line in paired_lines:
 import matplotlib.pyplot as plt
 
 milliseconds = []
-for i in range(2500):
+for i in range(DURATION_IN_MILLISECONDS):
     milliseconds.append(i)
 tenMilliseconds = []
-for i in range(250):
+for i in range(DURATION_IN_TEN_MILLISECONDS):
     tenMilliseconds.append(i * 10)
 
-
 plt.plot(milliseconds, openRequestCountPerMilliseconds, 'r',
-         tenMilliseconds, receivedRequestCountPerTenMilliseconds, 'b',
-         tenMilliseconds, completedRequestCountPerTenMilliseconds, 'g')
-plt.ylabel('open requests count per milliseconds')
+         tenMilliseconds, receivedRequestCountPerTenMilliseconds, 'b'
+         ,tenMilliseconds, completedRequestCountPerTenMilliseconds, 'g'
+         )
+plt.ylabel('requests')
+plt.title('[red] open requests count per milliseconds, [blue]received requests count every 10 milliseconds, [green] completed requests count every 10 milliseconds')
 plt.show()
